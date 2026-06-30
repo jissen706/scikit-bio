@@ -217,10 +217,6 @@ class TreeNode(SkbioObject):
     def _copy(self, deep, memo):
         """Return a copy of self."""
 
-        # decide deep or shallow copy
-        _copy = deepcopy if deep else copy
-        _args = [memo] if deep else []
-
         # node attributes to exclude during copying
         # add any custom attributes that were registered as caches
         exclude_attrs = self._exclude_from_copy
@@ -237,9 +233,8 @@ class TreeNode(SkbioObject):
         # within a tree, so...
         treenode = self.__class__
 
-        def __copy_node(node, parent=None):
-            """Copy a node."""
-
+        def __copy_structure(node, parent=None):
+            """Copy a node's built-in attributes (but not custom ones)."""
             # create a new instance by transferring built-in attributes, which can be
             # directly assigned
             res = treenode(
@@ -250,20 +245,19 @@ class TreeNode(SkbioObject):
                 children=None,
             )
             res.id = node.id
-
-            # copy custom attributes, which may be compound objects therefore need to
-            # be copied
-            # this method of iteration is slightly faster than
-            # `for key in node.__dict__.keys() - exclude_attrs:`
-            for key in node.__dict__:
-                if key not in exclude_attrs:
-                    res.__dict__[key] = _copy(node.__dict__[key], *_args)
             return res
 
-        # start with a copy of self, which will become the root (no parent)
-        root = __copy_node(self)
-        stack = [[root, self, len(self.children)]]
+        # First pass: copy the tree structure (built-in attributes only) and record
+        # a mapping from each original node to its copy. Copying of custom attributes
+        # is deferred to a second pass so that every node already exists before any
+        # attribute that references another node is copied. This avoids producing
+        # detached duplicates (or recursing infinitely on cyclic references) when a
+        # custom attribute points at another node in the tree (see issue #2084).
+        new_root = __copy_structure(self)
+        node_pairs = [(self, new_root)]
+        stack = [[new_root, self, len(self.children)]]
         stack_append = stack.append
+        pairs_append = node_pairs.append
 
         while stack:
             # check the top node, any children left unvisited?
@@ -273,12 +267,38 @@ class TreeNode(SkbioObject):
             if unvisited_children:
                 top[2] -= 1
                 old_child = old_top_node.children[-unvisited_children]
-                new_child = __copy_node(old_child, new_top_node)
+                new_child = __copy_structure(old_child, new_top_node)
                 new_top_node.children.append(new_child)
+                pairs_append((old_child, new_child))
                 stack_append([new_child, old_child, len(old_child.children)])
             else:
                 del stack[-1]
-        return root
+
+        # Second pass: copy custom attributes, which may be compound objects and
+        # therefore need to be copied. References to nodes within the same tree are
+        # redirected to the corresponding nodes in the copy.
+        if deep:
+            # Seed the deepcopy memo with the old-to-new node mapping. ``deepcopy``
+            # then substitutes the copied node for any reference into the original
+            # tree, whether direct, nested within a container, or cyclic.
+            for old_node, new_node in node_pairs:
+                memo[id(old_node)] = new_node
+            for old_node, new_node in node_pairs:
+                for key in old_node.__dict__:
+                    if key not in exclude_attrs:
+                        new_node.__dict__[key] = deepcopy(old_node.__dict__[key], memo)
+        else:
+            node_map = {id(old_node): new_node for old_node, new_node in node_pairs}
+            for old_node, new_node in node_pairs:
+                for key in old_node.__dict__:
+                    if key not in exclude_attrs:
+                        value = old_node.__dict__[key]
+                        if id(value) in node_map:
+                            new_node.__dict__[key] = node_map[id(value)]
+                        else:
+                            new_node.__dict__[key] = copy(value)
+
+        return new_root
 
     def __copy__(self):
         """Return a shallow copy."""

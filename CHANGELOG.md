@@ -11,6 +11,10 @@
 
 * When using the Numba backend, Permanova is up to 8x faster [#2488](https://github.com/scikit-bio/scikit-bio/pull/2488).
 
+### Bug Fixes
+
+* Fixed `TreeNode.copy` (and `copy.copy`/`copy.deepcopy`) producing detached duplicate nodes, or recursing infinitely on cyclic references, when a node carried a custom attribute referencing another node in the same tree. Such references are now redirected to the corresponding nodes in the copy ([#2497](https://github.com/scikit-bio/scikit-bio/pull/2497)).
+
 ## Version 0.7.3
 
 ### Features
